@@ -675,7 +675,14 @@ class RealFalcon6Adapter(PlantAdapter):
                     self._autopilot_target_cmd = target
                     self._apply_autopilot_decimation(plane, 0)
                 elif self._autopilot_prev_cmd is not None and self._autopilot_target_cmd is not None:
-                    self._apply_autopilot_decimation(plane, self._autopilot_tick % self._autopilot_decimation)
+                    # Fix: self._autopilot_tick ya fue incrementado en la
+                    # línea de arriba (step()), así que hay que restar 1
+                    # para obtener la fase real dentro del intervalo de
+                    # decimación -- sin el -1, la fase quedaba corrida un
+                    # paso (saltaba alpha=0.1 y reemplazaba alpha=0.9 por
+                    # alpha=0.0 en el último paso interior de cada ciclo,
+                    # ver validación Fase 2).
+                    self._apply_autopilot_decimation(plane, (self._autopilot_tick - 1) % self._autopilot_decimation)
             status_snapshot = self._packet.get_status()
             self._packet = make_packet(self.vehicle, self._packet.get_id())
             self._packet.set_status(status_snapshot)
