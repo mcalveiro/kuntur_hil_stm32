@@ -1,0 +1,360 @@
+{
+  "_readme": "Canal KUNTUR_PLANT_STATE v1 -- Host (plant_driver.py) -> STM32F767, via USB CDC, a 100 Hz (decimacion x10 respecto del paso fisico de 1 kHz). NO es parte del contrato Kuntur-IC v1.3 y NO pasa por kse_server -- transporte directo plant_driver.py -> stm32_bridge.py -> USB CDC. Transporta todo lo que el autopiloto FALCON6 (corriendo en el STM32) necesita del punto de vuelo instantaneo: cinematica, aceleraciones, condicion de vuelo, derivadas aerodinamicas y el waypoint activo -- ver plan-hil-stm32-portado-autopiloto.md parrafo 6.1. Las derivadas fueron relevadas contra cadac_py/falcon6.py (no asumidas del parrafo 6.1 del plan, que las listaba de forma especulativa): el control_roll/control_roll_rate usa dllp/dllda (plane[155/156]), control_pitch_rate/control_normal_accel usa dla/dlde/dma/dmq/dmde (plane[145-149]), control_lateral_accel usa dyb/dydr/dnb/dnr/dndr (plane[150-154]) -- 12 derivadas reales en total, no 14, y con otros nombres que los del borrador original del plan (dyp/dnp/dyda/dnda no existen en la fuente; dlde/dllp/dllda si existen y faltaban). Todos los campos de punto flotante son f64 (double nativo) a proposito: el STM32F767 tiene FPU FPv5-D16 y opera en double -- es lo que habilita la validacion bit-exacta contra la referencia Python (ver parrafo 7 del plan). gen_icd.py debe generar unicamente los *.py de kuntur_bridge -- el lado C (kuntur_ic_plant_state.h/c, firmware/kuntur_autopilot/src/icd/) se escribe a mano, con test de regresion byte a byte (decision del parrafo 6.3(b) del plan).",
+  "version": "1.0",
+  "transport": {
+    "path": "cadac_plant/plant_driver.py -> kuntur_bridge/stm32_bridge.py -> USB CDC -> STM32F767",
+    "via_kse_server": false,
+    "rate_hz": 100,
+    "decimation": "cada 10 pasos de int_step=0.001s (fisica a 1 kHz) -- ver plant_driver.py"
+  },
+  "codegen": {
+    "python": true,
+    "rust": false
+  },
+  "packets": {
+    "KUNTUR_PLANT_STATE": {
+      "magic_hex": "0x4B505331",
+      "magic_str": "KPS1",
+      "direction": "plant_driver.py -> STM32 (USB CDC)",
+      "expected_size": 352,
+      "fields": [
+        {
+          "name": "magic_header",
+          "kind": "scalar",
+          "type": "u32",
+          "unit": null,
+          "note": "framing"
+        },
+        {
+          "name": "t_sim_us",
+          "kind": "scalar",
+          "type": "u64",
+          "unit": "us",
+          "note": "mismo reloj que KUNTUR_STATES.t_sim_us"
+        },
+        {
+          "name": "seq_num",
+          "kind": "scalar",
+          "type": "u32",
+          "unit": null,
+          "note": "mismo contador que KUNTUR_STATES.seq_num"
+        },
+        {
+          "name": "flags",
+          "kind": "scalar",
+          "type": "u16",
+          "unit": null,
+          "note": "bit0=init (arranque/reset de episodio), bit1=active (si 0, el STM32 puede opcionalmente saltar computo)"
+        },
+        {
+          "name": "sn",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "posicion NED norte -- cadac_py flat6[219] (SBEL[0])"
+        },
+        {
+          "name": "se",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "posicion NED este -- flat6[219] (SBEL[1])"
+        },
+        {
+          "name": "sd",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "posicion NED abajo -- flat6[219] (SBEL[2])"
+        },
+        {
+          "name": "vn",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s",
+          "note": "velocidad NED norte -- flat6[233] (VBEL[0])"
+        },
+        {
+          "name": "ve",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s",
+          "note": "velocidad NED este -- flat6[233] (VBEL[1])"
+        },
+        {
+          "name": "vd",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s",
+          "note": "velocidad NED abajo -- flat6[233] (VBEL[2])"
+        },
+        {
+          "name": "phi",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad",
+          "note": "actitud roll -- flat6[136]"
+        },
+        {
+          "name": "theta",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad",
+          "note": "actitud pitch -- flat6[135]"
+        },
+        {
+          "name": "psi",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad",
+          "note": "actitud yaw -- flat6[134]"
+        },
+        {
+          "name": "p",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad/s",
+          "note": "tasa roll, ejes cuerpo -- flat6[164] (WBEB[0])"
+        },
+        {
+          "name": "q",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad/s",
+          "note": "tasa pitch, ejes cuerpo -- flat6[164] (WBEB[1])"
+        },
+        {
+          "name": "r",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad/s",
+          "note": "tasa yaw, ejes cuerpo -- flat6[164] (WBEB[2])"
+        },
+        {
+          "name": "ax",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "fuerza especifica, ejes cuerpo -- flat6[230] (FSPB[0])"
+        },
+        {
+          "name": "ay",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "fuerza especifica, ejes cuerpo -- flat6[230] (FSPB[1])"
+        },
+        {
+          "name": "az",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "fuerza especifica, ejes cuerpo -- flat6[230] (FSPB[2])"
+        },
+        {
+          "name": "pdynmc",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "Pa",
+          "note": "presion dinamica -- flat6[57]"
+        },
+        {
+          "name": "vmach",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": null,
+          "note": "Mach -- flat6[56]"
+        },
+        {
+          "name": "dvbe",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s",
+          "note": "TAS -- flat6[236]"
+        },
+        {
+          "name": "grav",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "gravedad local -- flat6[55] (G*EARTH_MASS/rad^2, NO es la constante AGRAV -- varia levemente con la distancia al centro de la Tierra). Usada por control_heading/control_altitude/guidance/guidance_line -- relevada al portar esas funciones, faltaba en el borrador original de este schema (control_lateral_accel tambien lee flat6[55], pero es una lectura muerta que no afecta su resultado -- ver control_lateral_accel.h)"
+        },
+        {
+          "name": "alpha",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad",
+          "note": "angulo de ataque -- radians(flat6[144])"
+        },
+        {
+          "name": "beta",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "rad",
+          "note": "sideslip -- radians(flat6[145])"
+        },
+        {
+          "name": "dla",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "lift slope derivative -- plane[145], usada por control_pitch_rate/control_normal_accel"
+        },
+        {
+          "name": "dlde",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "lift elevator control derivative -- plane[146]"
+        },
+        {
+          "name": "dma",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s^2",
+          "note": "pitch moment derivative -- plane[147]"
+        },
+        {
+          "name": "dmq",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s",
+          "note": "pitch damping derivative -- plane[148]"
+        },
+        {
+          "name": "dmde",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s^2",
+          "note": "pitch control derivative -- plane[149]"
+        },
+        {
+          "name": "dyb",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "side force derivative -- plane[150], usada por control_lateral_accel"
+        },
+        {
+          "name": "dydr",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m/s^2",
+          "note": "side force control derivative -- plane[151]"
+        },
+        {
+          "name": "dnb",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s^2",
+          "note": "yawing moment derivative -- plane[152]"
+        },
+        {
+          "name": "dnr",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s",
+          "note": "yaw damping derivative -- plane[153]"
+        },
+        {
+          "name": "dndr",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s^2",
+          "note": "yaw control derivative -- plane[154]"
+        },
+        {
+          "name": "dllp",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s",
+          "note": "roll damping derivative -- plane[155], usada por control_roll/control_roll_rate"
+        },
+        {
+          "name": "dllda",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "1/s^2",
+          "note": "roll control derivative -- plane[156]"
+        },
+        {
+          "name": "gmax",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "g's",
+          "note": "limite estructural positivo de maniobra -- plane[163], calculado en aerodynamics() desde el aerodeck (alpx/weight). Usado por control() en los lazos mautp==3/5 -- faltaba en el borrador original, encontrado al portar control() (Fase 3)"
+        },
+        {
+          "name": "gminx",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "g's",
+          "note": "limite estructural negativo de maniobra -- plane[167], idem gmax"
+        },
+        {
+          "name": "swel1",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "waypoint activo, NED norte -- plane[405]"
+        },
+        {
+          "name": "swel2",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "waypoint activo, NED este -- plane[406]"
+        },
+        {
+          "name": "swel3",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "waypoint activo, NED abajo -- plane[407]"
+        },
+        {
+          "name": "psiflx",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "deg",
+          "note": "rumbo objetivo de guiado -- plane[408] (crudo en grados, igual que el *.asc -- NO convertido a radianes, a diferencia de phi/theta/psi arriba)"
+        },
+        {
+          "name": "thtflx",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "deg",
+          "note": "angulo de planeo objetivo -- plane[409]"
+        },
+        {
+          "name": "altcom",
+          "kind": "scalar",
+          "type": "f64",
+          "unit": "m",
+          "note": "altitud comandada -- plane[527]"
+        },
+        {
+          "name": "mguid",
+          "kind": "scalar",
+          "type": "u16",
+          "unit": null,
+          "note": "modo de guiado (bitmask) -- plane[400]"
+        },
+        {
+          "name": "maut",
+          "kind": "scalar",
+          "type": "u16",
+          "unit": null,
+          "note": "modo de autopiloto, mauty*10+mautp -- plane[500]"
+        },
+        {
+          "name": "manual_active",
+          "kind": "scalar",
+          "type": "u16",
+          "unit": null,
+          "note": "1 si Kuntur-GCS esta en modo Manual (el STM32 puede saltar computo) -- ver gcs_api_worker.py / ModeLink"
+        }
+      ]
+    }
+  }
+}

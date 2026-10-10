@@ -1,0 +1,15 @@
+# waypoints_cordoba.txt -- Fork CADAC-SIL, patrulla sobre Córdoba
+# Circuito de 4 puntos (Restricción del simulador)
+# Formato: lat_deg, lon_deg, alt_msl_m, radio_captura_m
+
+# 0) Punto inicial: Aeropuerto Córdoba (SACO) -- Origen de la patrulla
+-31.3200, -64.2000, 750.0, 300.0
+
+# 1) Templo SUD / Nudo Vial Mujer Urbana -- Aproximación noroeste
+-31.3562, -64.2585, 750.0, 300.0
+
+# 2) Escuela de Aviación Militar (EAM / FAdeA) -- Límite oeste antes de las sierras
+-31.4400, -64.2780, 750.0, 300.0
+
+# 3) Universidad Tecnológica Nacional (UTN FRC) -- Cierre del circuito
+-31.4426, -64.1939, 750.0, 300.0

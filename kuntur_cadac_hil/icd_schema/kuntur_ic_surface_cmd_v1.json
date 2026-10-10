@@ -1,0 +1,35 @@
+{
+  "_readme": "Canal KUNTUR_SURFACE_CMD v1 -- STM32F767 -> Host (plant_driver.py), via USB CDC, respuesta a cada KUNTUR_PLANT_STATE (100 Hz). NO es parte del contrato Kuntur-IC v1.3 y NO pasa por kse_server. IMPORTANTE (corregido en Fase 3, al portar actuator()/actuator_scnd()): el plan incluye el modulo 'actuator' (dinamica de superficies de 2do orden, mact=2 en f16c11_7.asc) dentro de lo que corre en el STM32 -- por eso delax/delex/delrx ACA son la deflexion YA APLICADA (post-dinamica de actuador), no el comando crudo de 'control' (delacx/delecx/delrcx, que es un valor INTERNO del STM32, nunca cruza el wire). Esto importa para quien conecte el bypass del lado Python: hay que escribir estos valores en plane[619/620/621] (delax/delex/delrx) y SALTAR el dispatch nativo de 'actuator' ese paso -- escribirlos en plane[519-521] (delacx/delecx/delrcx) aplicaria la dinamica de actuador DOS VECES. Ver cadac_py/falcon6.py::actuator()/actuator_scnd(). f64 (double nativo) por la misma razon que KUNTUR_PLANT_STATE: habilita la validacion bit-exacta. t_sim_us/seq_num son ECO del KUNTUR_PLANT_STATE que los origino -- stm32_bridge.py los usa para descartar respuestas fuera de secuencia/viejas (ver fallback silencioso, parrafo 2 del plan). gen_icd.py genera unicamente los *.py de kuntur_bridge -- el lado C se escribe a mano (kuntur_ic_surface_cmd.h/c, firmware/kuntur_autopilot/src/icd/), con test de regresion byte a byte.",
+  "version": "1.0",
+  "transport": {
+    "path": "STM32F767 -> USB CDC -> kuntur_bridge/stm32_bridge.py -> cadac_plant/plant_driver.py",
+    "via_kse_server": false,
+    "rate_hz": 100
+  },
+  "codegen": {
+    "python": true,
+    "rust": false
+  },
+  "packets": {
+    "KUNTUR_SURFACE_CMD": {
+      "magic_hex": "0x4B534331",
+      "magic_str": "KSC1",
+      "direction": "STM32 (USB CDC) -> plant_driver.py",
+      "expected_size": 82,
+      "fields": [
+        {"name": "magic_header", "kind": "scalar", "type": "u32", "unit": null, "note": "framing"},
+        {"name": "t_sim_us", "kind": "scalar", "type": "u64", "unit": "us", "note": "eco del KUNTUR_PLANT_STATE que origino esta respuesta"},
+        {"name": "seq_num", "kind": "scalar", "type": "u32", "unit": null, "note": "eco del KUNTUR_PLANT_STATE que origino esta respuesta"},
+        {"name": "status", "kind": "scalar", "type": "u16", "unit": null, "note": "enum: OK=1, DEGRADED=2 -- ver stm32_bridge.py para el mapeo completo"},
+        {"name": "delax", "kind": "scalar", "type": "f64", "unit": "rad", "note": "aileron -- deflexion REAL ya aplicada (plane[619], post actuator()/actuator_scnd())"},
+        {"name": "delex", "kind": "scalar", "type": "f64", "unit": "rad", "note": "elevator -- deflexion REAL ya aplicada (plane[620])"},
+        {"name": "delrx", "kind": "scalar", "type": "f64", "unit": "rad", "note": "rudder -- deflexion REAL ya aplicada (plane[621])"},
+        {"name": "throttle", "kind": "scalar", "type": "f64", "unit": null, "range": [0.0, 1.0], "note": "comando de acelerador (sin dinamica de actuador -- propulsion_thrust() modela su propia respuesta, del lado planta/Python)"},
+        {"name": "gainfb1", "kind": "scalar", "type": "f64", "unit": null, "note": "debug -- ganancia actual del pole placement adaptativo (control_normal_accel), opcional"},
+        {"name": "gainfb2", "kind": "scalar", "type": "f64", "unit": null, "note": "debug -- idem, opcional"},
+        {"name": "gainfb3", "kind": "scalar", "type": "f64", "unit": null, "note": "debug -- idem, opcional"},
+        {"name": "wp_flag", "kind": "scalar", "type": "f64", "unit": null, "note": "debug -- estado de avance de waypoint calculado por el autopiloto en el STM32, opcional (f64 en vez de entero con signo: el generador Python de este fork no tiene tipos enteros con signo, y este campo es solo telemetria/diagnostico, no se usa en el bypass de plane_adapter.py)"}
+      ]
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "_readme": "Fuente unica de verdad del contrato Kuntur-IC v1.3. Reemplaza a v1.2 -- no coexisten (ver Especificacion_r01.md y la decision registrada en kuntur_bridge/README.md, seccion 'Migracion v1.2 -> v1.3'). NO editar kuntur_bridge/icd.py, kse_server/src/icd.rs, ni kuntur_ic_generated.h a mano -- regenerar con tools/gen_icd.py.",
+  "version": "1.3",
+  "packets": {
+    "KUNTUR_STATES": {
+      "magic_hex": "0x4B535433",
+      "magic_str": "KST3",
+      "direction": "Simulink -> KSE",
+      "expected_size": 92,
+      "fields": [
+        {"name": "magic_header", "kind": "scalar", "type": "u32", "unit": null, "note": "framing"},
+        {"name": "t_sim_us", "kind": "scalar", "type": "u64", "unit": "us", "note": "tiempo logico reportado por el solver"},
+        {"name": "seq_num", "kind": "scalar", "type": "u32", "unit": null, "note": "paso de solver"},
+        {"name": "pos_ned", "kind": "array", "type": "f32", "count": 3, "unit": "m", "elements": ["north", "east", "down"], "index_enum": "IcdNedIndex", "note": "passthrough directo de Simulink -- la proyeccion WGS-84 vive exclusivamente en geodesy.SACOLocalFrame (Python), no se duplica en la S-Function (Especificacion_r01.md, seccion 3)"},
+        {"name": "euler", "kind": "array", "type": "f32", "count": 3, "unit": "rad", "elements": ["phi", "theta", "psi"], "index_enum": "IcdEulerIndex", "note": "RADIANES -- deroga explicitamente el hallazgo historico 'ago_18' (que documentaba grados). Ver kuntur_fcs.py y flightgear_worker.py: ya NO llaman math.radians() sobre estos campos."},
+        {"name": "rates_body", "kind": "array", "type": "f32", "count": 3, "unit": "rad/s", "elements": ["p", "q", "r"], "index_enum": "IcdRatesIndex"},
+        {"name": "accel_body", "kind": "array", "type": "f32", "count": 3, "unit": "m/s^2", "elements": ["ax", "ay", "az"], "index_enum": "IcdAccelIndex", "note": "FUERZA ESPECIFICA (f_body), ya transformada por la S-Function: f_body = A_bb - g_body, con g_body = R_n^b * [0,0,g]. NO es aceleracion cinematica cruda -- ver Especificacion_r01.md seccion 2. Lista para HIL_SENSOR.xacc/yacc/zacc sin transformacion adicional."},
+        {"name": "vel_ned", "kind": "array", "type": "f32", "count": 3, "unit": "m/s", "elements": ["vn", "ve", "vd"], "index_enum": "IcdVelIndex", "note": "velocidad respecto de tierra en ejes NED (puerto 'Ground Speed' del bus States) -- pasa directo, sin transformar. Reemplaza a h_dot (v1.2), redundante con vel_ned[2]."},
+        {"name": "ias", "kind": "scalar", "type": "f32", "unit": "m/s", "note": "EAS, ver nota de nomenclatura en el contrato original"},
+        {"name": "alpha", "kind": "scalar", "type": "f32", "unit": "rad"},
+        {"name": "beta", "kind": "scalar", "type": "f32", "unit": "rad"},
+        {"name": "status", "kind": "scalar", "type": "u16", "unit": null, "note": "watchdog/flags de la planta"},
+        {"name": "_padding", "kind": "scalar", "type": "u16", "unit": null, "note": "alineacion a 4 bytes, no se decodifica"}
+      ]
+    },
+    "KUNTUR_COMMAND": {
+      "magic_hex": "0x434D4432",
+      "magic_str": "CMD2",
+      "direction": "KSE -> Simulink",
+      "expected_size": 34,
+      "note": "Sin cambios respecto de v1.2 -- el payload no cambio, no hay motivo para cambiar el magic (se evaluo adoptar 0x434D445F/'CMD_' de un borrador de SDD anterior y se descarto explicitamente por falta de justificacion).",
+      "fields": [
+        {"name": "magic_header", "kind": "scalar", "type": "u32", "unit": null, "note": "framing"},
+        {"name": "t_sim_us_grant", "kind": "scalar", "type": "u64", "unit": "us", "note": "autorizacion temporal del Executive"},
+        {"name": "elevator", "kind": "scalar", "type": "f32", "unit": null, "range": [-1.0, 1.0]},
+        {"name": "aileron", "kind": "scalar", "type": "f32", "unit": null, "range": [-1.0, 1.0]},
+        {"name": "rudder", "kind": "scalar", "type": "f32", "unit": null, "range": [-1.0, 1.0]},
+        {"name": "throttle", "kind": "scalar", "type": "f32", "unit": null, "range": [0.0, 1.0]},
+        {"name": "ground_elev_m", "kind": "scalar", "type": "f32", "unit": "m", "note": "cota de terreno real (FlightGear), MSL"},
+        {"name": "exec_mode", "kind": "scalar", "type": "u16", "unit": null, "note": "0: ENGINE_DRIVEN, 1: AUTHORITY_DRIVEN"}
+      ]
+    }
+  }
+}

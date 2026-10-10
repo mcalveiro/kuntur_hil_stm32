@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# PlatformIO (firmware/kuntur_autopilot/)
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Rust (kse_server/)
+target/
+
+# Logs de run_sim.py
+.run_sim_session.json

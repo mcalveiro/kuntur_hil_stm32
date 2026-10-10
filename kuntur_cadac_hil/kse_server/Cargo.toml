@@ -1,0 +1,15 @@
+[package]
+name = "kse_server"
+version = "0.1.0"
+edition = "2021"
+description = "KSE (Kuntur Simulation Executive) como proceso separado -- sin PyO3."
+
+[[bin]]
+name = "kse_server"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2.189"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }

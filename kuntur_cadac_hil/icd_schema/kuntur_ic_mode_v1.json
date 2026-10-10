@@ -1,0 +1,38 @@
+{
+  "_readme": "Canal de modo Kuntur-MODE v1 -- flag Automatico/Manual, kuntur_bridge (gcs_api_worker.py) -> plant_driver.py. NO es parte del contrato Kuntur-IC v1.3 (kuntur_ic_v1_3.json) y NO pasa por kse_server -- TCP directo, loopback, puerto 6200. Reemplaza, acotado solo al flag de modo, al rol que cumplia KUNTUR_CTL (retirado del backend, ver plan-hil-stm32-portado-autopiloto.md secciones 9/14): NO transporta retasking ni reemplazo de ruta, solo el modo vigente. gen_icd.py debe generar unicamente los *.py (Python) de kuntur_bridge -- SIN binding Rust -- igual que kuntur_ic_aux_v1.json, para no acoplar kse_server a este canal.",
+  "version": "1.0",
+  "transport": {
+    "path": "kuntur_bridge/gcs_api_worker.py (TCP, cliente) <-> plant_driver.py (TCP, servidor)",
+    "via_kse_server": false,
+    "port": 6200,
+    "framing": "TCP con magic_header por mensaje -- un solo tipo de mensaje por direccion, un cliente a la vez (mismo criterio que tenia CtlLink en cadac_plant/protocol.py)"
+  },
+  "codegen": {
+    "python": true,
+    "rust": false
+  },
+  "packets": {
+    "KUNTUR_MODE": {
+      "magic_hex": "0x4B4D4F44",
+      "magic_str": "KMOD",
+      "direction": "kuntur_bridge (gcs_api_worker.py) -> plant_driver.py",
+      "expected_size": 10,
+      "fields": [
+        {"name": "magic_header", "kind": "scalar", "type": "u32", "unit": null, "note": "framing"},
+        {"name": "seq", "kind": "scalar", "type": "u32", "unit": null, "note": "monotono por conexion -- plant_driver.py lo hace eco en el ACK, solo para correlacionar en el log"},
+        {"name": "mode", "kind": "scalar", "type": "u16", "unit": null, "note": "enum: AUTOMATIC=0, MANUAL=1 -- ver RealFalcon6Adapter._manual_mode_active en plane_adapter.py"}
+      ]
+    },
+    "KUNTUR_MODE_ACK": {
+      "magic_hex": "0x4B4D4132",
+      "magic_str": "KMA2",
+      "direction": "plant_driver.py -> kuntur_bridge (gcs_api_worker.py)",
+      "expected_size": 10,
+      "fields": [
+        {"name": "magic_header", "kind": "scalar", "type": "u32", "unit": null, "note": "framing"},
+        {"name": "seq", "kind": "scalar", "type": "u32", "unit": null, "note": "eco del seq de KUNTUR_MODE"},
+        {"name": "status", "kind": "scalar", "type": "u16", "unit": null, "note": "enum: APPLIED=1"}
+      ]
+    }
+  }
+}

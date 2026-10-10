@@ -1,0 +1,144 @@
+@startuml diagrama_bloques_sistema
+title Kuntur-SIM / CADAC-SIL -- Diagrama de Bloques\n(procesos, hilos, puertos y servicios)
+
+skinparam componentStyle rectangle
+skinparam wrapWidth 220
+skinparam shadowing false
+skinparam defaultTextAlignment center
+skinparam component {
+  BackgroundColor<<nuevo>> #D5F5D5
+  BorderColor<<nuevo>> #2E8B2E
+  BackgroundColor<<no_implementado>> #F5D5D5
+  BorderColor<<no_implementado>> #B03030
+  BackgroundColor<<opcional>> #FFF3C4
+  BorderColor<<opcional>> #B08900
+}
+
+actor "Operador" as Op
+
+node "Navegador -- Kuntur-GCS\n(kuntur-gcs/, React + TypeScript)" as GCS {
+  component "useTelemetry.ts\n(EventSource + fetch)" as GCS_Tel
+  component "useFsm.ts\nsubmitRetask() -> fetch" as GCS_Fsm <<nuevo>>
+}
+
+node "Proceso: cadac_plant/plant_driver.py\n(\"Terminal 2\" -- corre APARTE de kuntur_bridge;\ndesde KSE/kuntur_bridge, ES Simulink)" as PlantProc {
+  component "RealFalcon6Adapter\n(envuelve cadac_py/falcon6.py::Plane --\nfísica + control + guiado)" as Adapter
+  component "RouteWaypointSource\n(ruta cíclica o finita,\nloiter_last/none)" as RouteSrc <<nuevo>>
+  component "PlantLink\n(UDP, Kuntur-IC v1.3)" as PlantLink
+  component "AuxTelemetryLink\n(UDP TX, solo instrumentación)" as AuxLink
+  component "CtlLink\n(servidor TCP, retasking/\nreemplazo de ruta)" as CtlLinkC <<nuevo>>
+}
+
+node "Proceso: kse_server (Rust)\n\"KSE\" -- Kuntur Simulation Executive\nbroker de rendezvous, multi-hilo (std::thread)\nspawneado por KSEClient" as KSE {
+  component "Hilo \"kse-grant-step\"\n(UDP TX/RX + rendezvous\nactuators_ready/new_state)" as KseLoop
+  component "Unix socket /tmp/kse.sock\nCHANNEL CMD (texto línea a línea)\nSNAPSHOT / SET_ACTUATORS /\nSET_GROUND_ELEV / SET_EXEC_MODE /\nSTALENESS / RESET / STOP" as KseCmd
+  component "Unix socket /tmp/kse.sock\nCHANNEL READY | NEW_STATE |\nACTUATORS_READY\n(WAIT <timeout> / SET / CLEAR / IS_SET)" as KseEvents
+}
+
+node "Proceso: kuntur_bridge (Python, main.py)\norquestador multi-hilo (componentes opt-in vía .ini)" as Bridge {
+  component "KSEClient\n(spawnea kse_server,\ncliente de los 4 canales Unix)" as KseClient
+  component "telnet_client.calibrate_origin()\n-> SACOLocalFrame\n(autoridad única de proyección WGS-84)" as TelnetCal
+  component "flightgear_worker\n(hilo, 30 Hz)" as FGWorker
+  component "aux_instrument_worker\n(hilo, Telnet DEDICADO,\nno comparte prop_tree)" as AuxWorker
+  component "telemetry_stream_worker\n(hilo, SSE + REST lectura, :8765)" as TelWorker
+  component "gcs_api_worker\n(hilo, REST escritura, :8766)" as ApiWorker <<nuevo>>
+  component "CtlClient\n(cliente TCP persistente,\nseq por conexión, lock)" as CtlClient <<nuevo>>
+  component "fcs_worker\n(KunturFCS o FalconFCS --\nexcluyente con px4)" as FcsWorker <<opcional>>
+  component "px4_bridge_worker\n(MAVLink 2 -- excluyente con fcs)" as Px4Worker <<opcional>>
+  component "FDIRSupervisor\n(hilo, auto-reset por staleness)" as Fdir
+  component "mission_bridge_worker\n[NO IMPLEMENTADO --\nmission_bridge.py no existe,\nimport roto si se habilita 'mission']" as MissionWorker <<no_implementado>>
+
+  ApiWorker --> CtlClient
+}
+
+node "FlightGear\n(--fdm=null, aeronave F-16, solo visual)" as FG {
+  component "Native FDM :5501 (UDP, RX)" as FGFdm
+  component "Property Tree -- Telnet :5000\n(DOS conexiones separadas, no\nthread-safe compartir FGPropertyTree)" as FGTelnet
+}
+
+node "PX4 (opcional, HITL)\nfuera del lazo de actuación en este fork" as PX4Node <<opcional>> {
+  component "MAVLink 2\n(udpin:0.0.0.0:14551 o serial)" as Px4Mav
+}
+
+' ---------- Kuntur-IC v1.3 (UDP), vía kse_server ----------
+PlantLink -down-> KseLoop : "UDP :6000\nKUNTUR_STATES\n92 B, magic KST3\nplanta -> KSE"
+KseLoop -up-> PlantLink : "UDP :6001\nKUNTUR_COMMAND\n34 B, magic CMD2, lleva exec_mode\nKSE -> planta (RECIBIDO, IGNORADO por\nRealFalcon6Adapter.step())"
+
+' ---------- Canal auxiliar de instrumentación (bypassa KSE) ----------
+AuxLink -right-> AuxWorker : "UDP :7000\nKUNTUR_AUX\n60 B, magic KAX1\ndirecto planta -> bridge,\ndecimado 1 kHz -> 25 Hz"
+
+' ---------- Canal de control KUNTUR_CTL (NUEVO, bypassa KSE) ----------
+CtlClient -left-> CtlLinkC : "TCP :6100 (KUNTUR_CTL)\nKUNTUR_RETASK 24B (KRT2)\nKUNTUR_ROUTE_REPLACE 790B (KRR2)"
+CtlLinkC -right-> CtlClient : "KUNTUR_RETASK_ACK 10B (KRA2)\nKUNTUR_ROUTE_ACK 10B (KRZ2)"
+
+' ---------- kse_server <-> kuntur_bridge (Unix socket control-plane) ----------
+KseClient -down-> KseCmd : "AF_UNIX /tmp/kse.sock\nCHANNEL CMD"
+KseClient -down-> KseEvents : "AF_UNIX /tmp/kse.sock\nCHANNEL READY / NEW_STATE / ACTUATORS_READY"
+FcsWorker ..> KseClient : "set_actuators()\n+ actuators_ready_event.set()"
+Px4Worker ..> KseClient : "set_actuators()\n+ actuators_ready_event.set()"
+Fdir ..> KseClient : "control_staleness_cycles()\n-> reset() si supera umbral"
+FGWorker ..> KseClient : "snapshot()"
+TelWorker ..> KseClient : "snapshot()"
+
+' ---------- kuntur_bridge <-> FlightGear ----------
+FGWorker -down-> FGFdm : "UDP :5501\nFDM nativo, 30 Hz"
+FGWorker -down-> FGTelnet : "Telnet :5000 (polling\nground-elev-ft)"
+FGTelnet -up-> FGWorker : "set_ground_elevation()\n-> kse.set_ground_elevation()"
+AuxWorker -down-> FGTelnet : "Telnet :5000 (conexión DEDICADA)\nengine n1/n2/running, alpha-deg,\naltitude-agl-ft, vertical-speed-fps, pilot-g"
+TelnetCal -down-> FGTelnet : "Telnet :5000\nGET lat/lon/alt (calibración de origen)"
+FGTelnet -up-> TelnetCal : "SACOLocalFrame(lat0,lon0,alt0)\no fallback (config.FALLBACK_LAT/LON/ALT)\nsi Telnet no disponible tras 5 intentos"
+
+' ---------- kuntur_bridge <-> PX4 (opcional) ----------
+Px4Worker -down-> Px4Mav : "MAVLink 2 TX:\nHEARTBEAT 1Hz, HIL_SENSOR,\nHIL_GPS 5Hz, HIL_STATE_QUATERNION 10Hz"
+Px4Mav -up-> Px4Worker : "MAVLink 2 RX:\nHIL_ACTUATOR_CONTROLS\n-> aileron/elevator/rudder/throttle"
+
+' ---------- kuntur_bridge <-> Navegador ----------
+TelWorker -up-> GCS_Tel : "HTTP :8765\nGET /telemetry (SSE, 10-30 Hz)\nGET /route, GET /health"
+GCS_Fsm -down-> ApiWorker : "HTTP :8766\nPOST /retask {lat_deg,lon_deg}\nPOST /route_replace {waypoints[],on_exhausted}"
+ApiWorker -up-> GCS_Fsm : "200 {status, seq} |\n503 unreachable | 400 bad_request"
+
+Op -down-> GCS : clic en mapa,\n\"Próximo Waypoint\"
+
+note bottom of CtlClient
+  Capa anticorrupción (backlog #12): el navegador NUNCA
+  conoce frame_origin_lat/lon_deg -- CtlClient los completa
+  automáticamente a partir del SACOLocalFrame ya calibrado.
+  seq es monótono POR CONEXIÓN TCP (se reinicia a 0 en cada
+  connect() nuevo, simétrico con reset_ctl_dedup() del adaptador).
+end note
+
+note bottom of CtlLinkC
+  Un solo cliente a la vez (loopback). Framing explícito sobre
+  TCP: lee el magic_header primero para saber qué tamaño fijo
+  esperar (RETASK 24B vs ROUTE_REPLACE 790B), acumula hasta
+  completar el mensaje, pipeline de varios mensajes por conexión.
+end note
+
+note bottom of RouteSrc
+  Reemplaza el indexado cíclico manual anterior. Lookahead de 1
+  paso (peek_next()) para preservar el bearing de anticipación
+  de pierna que ya usaba el mecanismo viejo, bit-a-bit.
+end note
+
+note right of KseLoop
+  exec_mode (ENGINE_DRIVEN=0 / AUTHORITY_DRIVEN=1) es un u16
+  OPACO para KSE -- solo se relee y se reenvía en KUNTUR_COMMAND;
+  la semántica de cada modo la interpreta protocol.PlantLink del
+  lado planta, no kse_server.
+end note
+
+legend right
+  |= Puerto / socket |= Protocolo |= Mensaje(s) |= Dirección |
+  | UDP 6000 | Kuntur-IC v1.3 | KUNTUR_STATES (92B) | planta -> KSE |
+  | UDP 6001 | Kuntur-IC v1.3 | KUNTUR_COMMAND (34B) | KSE -> planta |
+  | UDP 7000 | KUNTUR_AUX | KUNTUR_AUX (60B) | planta -> bridge (directo) |
+  | TCP 6100 | KUNTUR_CTL (nuevo) | RETASK/ROUTE_REPLACE + ACKs | bridge <-> planta (directo) |
+  | AF_UNIX /tmp/kse.sock | texto línea a línea | CMD / READY / NEW_STATE / ACTUATORS_READY | bridge <-> KSE |
+  | UDP 5501 | FlightGear native FDM | -- | bridge -> FlightGear |
+  | TCP 5000 | Telnet (property tree) | -- | bridge <-> FlightGear |
+  | HTTP 8765 | SSE + REST (solo lectura) | /telemetry /route /health | bridge -> navegador |
+  | HTTP 8766 | REST (nuevo, escritura) | /retask /route_replace | navegador -> bridge |
+  | MAVLink 2 (opcional) | udpin:0.0.0.0:14551 o serial | HEARTBEAT/HIL_*/HIL_ACTUATOR_CONTROLS | bridge <-> PX4 |
+endlegend
+
+@enduml

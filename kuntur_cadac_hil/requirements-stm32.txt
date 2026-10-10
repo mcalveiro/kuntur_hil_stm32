@@ -1,0 +1,8 @@
+# kuntur_bridge/cadac_plant no tienen dependencias de terceros para su
+# núcleo (executive, flightgear, telemetry_stream, gcs_api, la física).
+# La única excepción es kuntur_bridge/stm32_bridge.py (puente USB CDC
+# hacia el STM32F767, ver plan-hil-stm32-portado-autopiloto.md §5/§11
+# Fase 5-6) -- sin esto instalado, plant_driver.py --stm32-port cae en
+# modo fallback permanente sin crashear (el autopiloto nativo Python
+# gobierna siempre), pero no hay HIL real.
+pyserial

@@ -1,0 +1,39 @@
+{
+  "_readme": "Canal auxiliar de instrumentacion Kuntur-AUX v1. NO es parte del contrato Kuntur-IC v1.3 (kuntur_ic_v1_3.json) y NO pasa por kse_server -- transporte directo plant_driver.py -> kuntur_bridge, puerto 7000, decimado a 25 Hz desde el paso base de 1 kHz (submuestreo cada 40 pasos). Proposito: adaptar senales de instrumentacion (vuelo + motor) del simulador batch cadac_py hacia FlightGear via Property Tree/Telnet -- no es un canal de control planta<->FCS. gen_icd.py debe generar unicamente icd_aux.py (Python) -- SIN binding Rust -- para preservar la separacion de responsabilidad de kse_server como broker acotado a Kuntur-IC v1.3.",
+  "version": "1.0",
+  "transport": {
+    "path": "plant_driver.py -> kuntur_bridge",
+    "via_kse_server": false,
+    "port": 7000,
+    "rate_hz": 25,
+    "decimation": "cada 40 pasos de int_step=0.001s, aplicada en plant_driver.py"
+  },
+  "codegen": {
+    "python": true,
+    "rust": false
+  },
+  "packets": {
+    "KUNTUR_AUX": {
+      "magic_hex": "0x4B415831",
+      "magic_str": "KAX1",
+      "direction": "plant_driver.py -> kuntur_bridge",
+      "expected_size": 60,
+      "fields": [
+        {"name": "magic_header", "kind": "scalar", "type": "u32", "unit": null, "note": "framing"},
+        {"name": "t_sim_us", "kind": "scalar", "type": "u64", "unit": "us", "note": "mismo reloj que KUNTUR_STATES.t_sim_us"},
+        {"name": "seq_num", "kind": "scalar", "type": "u32", "unit": null, "note": "mismo contador que KUNTUR_STATES.seq_num -- NO es un contador propio del canal auxiliar"},
+        {"name": "dvbe", "kind": "scalar", "type": "f32", "unit": "m/s", "note": "TAS -- cadac_py flat6[236]"},
+        {"name": "vmach", "kind": "scalar", "type": "f32", "unit": null, "note": "Mach -- cadac_py flat6[56]"},
+        {"name": "pdynmc", "kind": "scalar", "type": "f32", "unit": "Pa", "note": "presion dinamica -- cadac_py flat6[57] -- usada para derivar IAS/EAS del lado kuntur_bridge"},
+        {"name": "hbe", "kind": "scalar", "type": "f32", "unit": "m", "note": "altura AGL -- cadac_py flat6[239]"},
+        {"name": "altrate", "kind": "scalar", "type": "f32", "unit": "m/s", "note": "variometro -- cadac_py plane[530]"},
+        {"name": "alppx", "kind": "scalar", "type": "f32", "unit": "deg", "note": "AOA -- cadac_py flat6[140]"},
+        {"name": "betax", "kind": "scalar", "type": "f32", "unit": "deg", "note": "sideslip -- cadac_py flat6[145]"},
+        {"name": "anx", "kind": "scalar", "type": "f32", "unit": "g", "note": "factor de carga normal -- cadac_py flat6[244]"},
+        {"name": "throttle", "kind": "scalar", "type": "f32", "unit": null, "range": [0.0, 1.0], "note": "cadac_py plane[52] -- fuente de 'running' derivado en kuntur_bridge (running = throttle > 0)"},
+        {"name": "power", "kind": "scalar", "type": "f32", "unit": "%", "note": "potencia lograda (estado integrado, incluye dinamica de spool-up) -- cadac_py plane[59] -- escrita a n1 y n2 de FlightGear (indexado y sin indexar, ver mapeo)"},
+        {"name": "thrust", "kind": "scalar", "type": "f32", "unit": "N", "note": "empuje -- cadac_py plane[55]"}
+      ]
+    }
+  }
+}

@@ -1,0 +1,204 @@
+@startuml diagrama_secuencia_sistema
+title Kuntur-SIM / CADAC-SIL -- Secuencia de ejecución completa\n(arranque, bucle en tiempo real, retasking end-to-end)
+
+skinparam wrapWidth 220
+skinparam maxMessageSize 220
+skinparam sequenceMessageAlign center
+
+participant "Operador" as Op
+participant "Kuntur-GCS\n(navegador)" as GCS
+participant "kuntur_bridge.main" as Main
+participant "KSEClient" as KC
+participant "kse_server\n(proceso Rust)" as KseProc
+participant "Hilo kse-grant-step" as KSE
+participant "Unix socket\n/tmp/kse.sock" as Sock
+participant "telnet_client" as TC
+participant "flightgear_worker" as FGW
+participant "aux_instrument_worker" as AuxW
+participant "telemetry_stream_worker\n(:8765)" as TelW
+participant "gcs_api_worker\n(:8766)" as Api
+participant "CtlClient" as CtlCli
+participant "plant_driver.py" as PD
+participant "RealFalcon6Adapter" as Adapter
+participant "PlantLink" as PL
+participant "AuxTelemetryLink" as AL
+participant "CtlLink\n(TCP :6100)" as CtlSrv
+participant "FlightGear" as FG
+
+== 1. Arranque y calibración ==
+
+Op -> Main : python3 -m kuntur_bridge.main\n--config kuntur_sim.ini
+activate Main
+Main -> KC ** : KSEClient(socket_path=/tmp/kse.sock, ...)
+KC -> KseProc ** : spawn subprocess\n(env KSE_TELEMETRY_PORT=6000,\nKSE_COMMAND_PORT=6001)
+activate KseProc
+KseProc -> KSE ** : thread::spawn("kse-grant-step")
+KseProc -> Sock ** : UnixListener::bind(/tmp/kse.sock)
+KC -> Sock : connect x4\n(CHANNEL CMD, READY, NEW_STATE, ACTUATORS_READY)
+
+Main -> TC ** : calibrate_origin(fg_ip, fg_telnet_port=5000,\nfallback_lat/lon/alt)
+activate TC
+TC -> FG : Telnet :5000 -- "data\\r\\n"\nGET /position/latitude-deg, .../longitude-deg, .../altitude-ft
+alt Telnet disponible y valores plausibles
+  FG --> TC : lat0, lon0, alt0
+  TC --> Main : SACOLocalFrame(lat0, lon0, alt0), prop_tree
+else Telnet no disponible (5 intentos, 2s entre cada uno)
+  TC --> Main : SACOLocalFrame(FALLBACK_LAT/LON/ALT), prop_tree=None
+end
+deactivate TC
+
+Main -> FGW ** : thread "FlightGearWorker"\n(si 'flightgear' habilitado)
+activate FGW
+Main -> AuxW ** : thread "AuxInstrumentWorker"\n(si 'flightgear' habilitado,\nTelnet DEDICADO, no comparte prop_tree)
+activate AuxW
+Main -> TelW ** : thread "TelemetryStream"\n(si 'telemetry_stream' habilitado)
+activate TelW
+Main -> Api ** : thread "GcsApiWorker"\n(si 'gcs_api' habilitado -- OPT-IN,\nno está en la lista default de 'enabled')
+activate Api
+Api -> CtlCli ** : CtlClient(ctl_ip, ctl_port=6100, local_frame)
+
+Op -> PD ** : python3 -m cadac_plant.plant_driver\n--adapter real --waypoints scenarios/...\n(PROCESO APARTE -- "Terminal 2")
+activate PD
+PD -> Adapter ** : RealFalcon6Adapter(asc_path, waypoints)
+Adapter -> Adapter : RouteWaypointSource(itertools.cycle(coords))\n(ver _build()/reset())
+PD -> Adapter : set_frame(SACOLocalFrame(\n--origin-lat/--origin-lon/--origin-alt))
+PD -> Adapter : reset(north0, east0, down0, psi0, ias0)
+PD -> PL ** : PlantLink(kse_ip, telemetry_port=6000,\ncommand_port=6001)
+PD -> AL ** : AuxTelemetryLink(bridge_ip, aux_port=7000)
+PD -> CtlSrv ** : CtlLink(ctl_port=6100)\nbind + listen (TCP, no bloqueante)
+
+== 2. Bucle de ejecución en tiempo real (cada int_step, p.ej. 1 kHz) ==
+
+loop cada paso de integración
+  PD -> Adapter : step(dt, actuator)
+  activate Adapter
+  Adapter -> Adapter : _EXEC_DISPATCH en orden\n(environment/kinematics/aero/propulsion/\nforces/guidance/control/actuator/euler/newton)
+  Adapter -> Adapter : _advance_route_waypoint()\n(si cola nativa agotada y wp_flag cruza a -1:\nRouteWaypointSource.next()/peek_next(),\n_bearing_to(), _apply_target())
+  Adapter --> PD : PlantState
+  deactivate Adapter
+
+  PD -> PL : send_states(t_sim_us, seq_num, state)
+  PL -> KSE : UDP :6000\nKUNTUR_STATES (92B, magic KST3)
+  activate KSE
+  KSE -> KSE : actuators_ready.clear()\nnew_state.set()
+  KSE -> Sock : (notifica a quien esté\nesperando en CHANNEL NEW_STATE)
+  KSE -> KSE : wait(actuators_ready,\ntimeout = 3 ms)
+  alt fcs/px4 habilitado y confirma a tiempo
+    Sock --> KSE : CHANNEL ACTUATORS_READY: SET
+    KSE -> KSE : stale_cycles = 0
+  else timeout (SIL puro -- default de este fork)
+    KSE -> KSE : stale_cycles++\n(KSE_EXPECT_ACTUATOR_CLIENT=0\n-> advertencia silenciada)
+  end
+  KSE -> PL : UDP :6001\nKUNTUR_COMMAND (34B, magic CMD2, exec_mode)
+  deactivate KSE
+  PL --> PD : CommandPacket\n(RECIBIDO, IGNORADO --\nRealFalcon6Adapter.step() no lo aplica)
+
+  opt paso decimado x40 (~25 Hz)
+    PD -> AL : send_aux(t_sim_us, seq_num,\nadapter.aux_telemetry())
+    AL -> AuxW : UDP :7000\nKUNTUR_AUX (60B, magic KAX1)
+    AuxW -> FG : Telnet :5000 (conexión dedicada)\nengine n1/n2/running, alpha-deg,\naltitude-agl-ft, vertical-speed-fps, pilot-g
+  end
+
+  opt canal KUNTUR_CTL con mensaje pendiente (ver sección 3)
+    PD -> CtlSrv : poll() -- no bloqueante
+  end
+end
+
+par Telemetría hacia FlightGear (30 Hz, vía KSE)
+  FGW -> KC : snapshot()
+  KC -> Sock : CHANNEL CMD: SNAPSHOT
+  Sock --> KC : AircraftStateSnapshot
+  KC --> FGW : snapshot
+  FGW -> FG : UDP :5501\nFDM nativo (native_fdm)
+  opt cada N ciclos
+    FGW -> FG : Telnet :5000\nGET /position/ground-elev-ft
+    FGW -> KC : set_ground_elevation(elev_m)
+    KC -> Sock : CHANNEL CMD: SET_GROUND_ELEV <v>
+  end
+else Telemetría hacia Kuntur-GCS (10-30 Hz)
+  TelW -> KC : snapshot()
+  KC -> Sock : CHANNEL CMD: SNAPSHOT
+  Sock --> KC : AircraftStateSnapshot
+  KC --> TelW : snapshot
+  TelW -> TelW : _snapshot_to_frame()\n(NED -> lat/lon/alt vía SACOLocalFrame)
+  TelW -> GCS : HTTP :8765 -- SSE\n"data: {...}\\n\\n" sobre GET /telemetry
+end
+
+== 3. Retasking end-to-end (operador hace clic en el mapa) ==
+
+Op -> GCS : clic en el mapa + "Próximo Waypoint"
+GCS -> GCS : useFsm.submitRetask()\nvalida ENVELOPE localmente,\nsetPendingRetask(...), log "Comando enviado"
+GCS -> GCS : arma timeout de seguridad (5s)
+GCS -> Api : HTTP :8766\nPOST /retask {lat_deg, lon_deg}
+activate Api
+
+alt CtlClient sin conexión vigente
+  Api -> CtlCli : retask(lat_deg, lon_deg)
+  CtlCli -> CtlSrv : connect() TCP :6100\n(timeout de conexión 1s)
+  CtlCli -> CtlCli : _retask_seq = 0 (reinicio\npor conexión nueva)
+else ya conectado
+  Api -> CtlCli : retask(lat_deg, lon_deg)
+end
+
+CtlCli -> CtlCli : seq = ++_retask_seq\ncompleta frame_origin_lat/lon_deg\n(el navegador nunca los conoce)
+CtlCli -> CtlSrv : TCP -- KUNTUR_RETASK (24B, magic KRT2)\nseq, lat_deg, lon_deg,\nframe_origin_lat_deg, frame_origin_lon_deg
+activate CtlSrv
+
+CtlSrv -> CtlSrv : ¿nueva conexión TCP detectada\n(connection_generation cambió)?
+opt sí
+  CtlSrv -> Adapter : reset_ctl_dedup()\n(_last_retask_seq = -1)
+end
+
+CtlSrv -> Adapter : retask(seq, lat_deg, lon_deg,\nframe_origin_lat_deg, frame_origin_lon_deg)
+activate Adapter
+
+alt seq <= _last_retask_seq
+  Adapter --> CtlSrv : "rejected_stale_seq"
+else not frame.matches(frame_origin_lat/lon, tol=1e-5°)
+  Adapter --> CtlSrv : "rejected_origin_mismatch"
+else hypot(north, east) > 250 km
+  Adapter --> CtlSrv : "rejected_out_of_range"
+else válido
+  Adapter -> Adapter : geodetic_to_ned(lat_deg, lon_deg, 0.0)
+  Adapter -> Adapter : hbe = flat6[239] (AGL actual, se sostiene)\npsiflx = _bearing_to(posición actual, destino)
+  Adapter -> Adapter : _apply_target(north, east, -hbe,\npsiflx, altcom=hbe)
+  Adapter -> Adapter : _route_prev_wp_flag = -1\n(rearme de flanco)
+  Adapter -> Adapter : _last_retask_seq = seq
+  Adapter --> CtlSrv : "applied"
+end
+deactivate Adapter
+
+CtlSrv -> CtlCli : TCP -- KUNTUR_RETASK_ACK (10B, magic KRA2)\nseq, status
+deactivate CtlSrv
+CtlCli --> Api : {status, seq}
+deactivate Api
+Api --> GCS : 200 {"status": "...", "seq": N}\n(o 503 "unreachable" / 400 "bad_request"\nsi CtlClient no pudo conectar o el\nrequest era inválido -- no cuelga al navegador)
+
+alt status == "applied"
+  GCS -> GCS : clearTimeout(safety)\nsetConfirmedRetask(...), setPendingRetask(null)\nlog "ACK recibido -- vehículo redirigido"
+else rechazado ("rejected_*") / "unreachable" / "bad_request"
+  GCS -> GCS : clearTimeout(safety)\nsetPendingRetask(null)\nsetRetaskError(mensaje en español por código)
+end
+GCS --> Op : UI actualizada\n(marcador confirmado o mensaje de error)
+
+note over GCS
+  Si el fetch() falla por red (bridge inalcanzable
+  a nivel TCP, no HTTP) se trata igual que un rechazo
+  -- no se espera el timeout de 5s completo. Ese timeout
+  es la red de seguridad de ÚLTIMO recurso, no el camino
+  esperado de error.
+end note
+
+== Flujo análogo: POST /route_replace ==
+note over Op, CtlSrv
+  Mismo camino que §3, con KUNTUR_ROUTE_REPLACE (790B, KRR2) /
+  KUNTUR_ROUTE_ACK (10B, KRZ2), contador de seq INDEPENDIENTE
+  (_route_seq / _last_route_replace_seq), y
+  RealFalcon6Adapter.replace_route() en vez de retask()
+  (set_route_source() reemplaza la ruta completa por
+  reasignación de referencia). Expuesto en gcs_api_worker,
+  SIN consumidor en la UI de Kuntur-GCS todavía (no existe
+  editor de misión -- backlog #18).
+end note
+
+@enduml
