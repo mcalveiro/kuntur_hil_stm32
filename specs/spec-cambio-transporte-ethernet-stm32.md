@@ -85,9 +85,83 @@ explícito fue "manteniendo, en la medida de lo posible, la
 arquitectura y el flujo de datos actuales"). Cambiar el transporte por
 sí solo **no cierra el Gate Nivel 1** — lo que hace es remover la
 restricción de latencia/throughput que originalmente forzó el techo de
-100 Hz, dejando la cadencia como una decisión abierta a revisar en una
-iteración posterior, una vez caracterizado el link Ethernet (ver §8,
-"Fuera de alcance").
+100 Hz.
+
+Lo que esta restricción deja de ser, a partir de la evidencia de §1.4,
+es "una mejora opcional a revisar algún día": el barrido de tasas en
+SIL puro muestra que **ninguna cadencia decimada probada (100/200/500
+Hz) converge** dentro de las ventanas evaluadas, y que la única opción
+sin decimación (1 kHz, igual a la planta) exige del transporte un
+round-trip por debajo de ~1 ms — más estricto que lo que USB CDC pudo
+sostener (Fase 5: 0.728-1.874 ms). Subir la cadencia deja de ser un
+"paso lógico siguiente" discrecional y pasa a ser, probablemente, una
+condición necesaria para que el HIL converja en absoluto — pero
+**decidir y validar esa cadencia sigue, de todas formas, fuera del
+alcance de este documento** (que solo cambia el transporte): lo que
+cambia es que la Fase D (§7) ahora tiene que caracterizar explícitamente
+si Ethernet puede sostener ese round-trip, no solo si es "mejor que
+USB CDC".
+
+### 1.4 Evidencia adicional — barrido de tasas en SIL puro (2026-10-10)
+
+Usando `audit_decimation_bandwidth.py` (la auditoría portable citada
+en §1.1), se corrió un barrido de tasas HIL contra la planta nativa
+(1 kHz), en SIL puro — sin STM32, sin transporte de ningún tipo. Dos
+corridas:
+
+**Barrido corto (60s simulados, 100/200/500/1000 Hz):**
+
+| Tasa | n | t→1m | t→100m | t→1000m | Pico en 60s |
+|---|---|---|---|---|---|
+| 100 Hz | 10 | 1.0s | 3.0s | 7.0s | ~6730 m (t≈55s) |
+| 200 Hz | 5 | 1.0s | 3.0s | 7.0s | similar orden, *peor* punto a punto que 100 Hz |
+| 500 Hz | 2 | 1.0s | 4.0s | 16.0s | ~4281 m (t≈52s) |
+| 1000 Hz | 1 (= nativo, caso trivial) | nunca | nunca | nunca | 0.0 m exacto |
+
+El caso de 1000 Hz es trivial por construcción (n=1 significa "sin
+decimación", comparando nativo contra sí mismo) — confirma que el
+método no inventa divergencia donde no hay decimación real, pero no es
+evidencia de que 1 kHz "resuelva" nada; solo que no hay nada que
+resolver cuando no se decima.
+
+**Restricción arquitectónica que este barrido expuso:** la planta
+tiene su paso de integración fijo en 1 kHz
+(`RealFalcon6Adapter.int_step_s`), así que el factor de decimación
+tiene que ser un divisor entero exacto de 1000. Se intentó 750 Hz como
+punto intermedio entre 500 y 1000 — el propio script lo rechazó
+(1000/750 = 1.333, no entero; ver `TEST_audit_decimation_bandwidth.md`
+§6 para el mecanismo de esta verificación). **No existe ningún divisor
+entero de 1000 entre 500 y 1000.** La única forma de "subir" desde 500
+Hz es saltar directo a 1000 Hz — es decir, a correr el autopiloto en
+cada paso físico, sin decimar en absoluto.
+
+**Barrido extendido (200s simulados, 500 Hz, dos vueltas de
+patrullaje):** para descartar que la curva de 500 Hz simplemente
+tardara más en estabilizarse en un ciclo límite con offset:
+
+| Evento | t (s) | pos_diff (m) |
+|---|---|---|
+| 1er pico | 52 | 4 281 |
+| valle | 113 | 1 352 |
+| **2do pico** | **180** | **10 618** (2.5× el primer pico) |
+
+La envolvente de divergencia **crece** entre la primera y la segunda
+vuelta, no se estabiliza. Confirmación independiente, más contundente
+que el número de posición: en los mismos 200s, el adaptador nativo
+cruza el waypoint 4 veces (t=0, 48, 105, 185s) y el decimado a 500 Hz
+solo 2 veces (t=0, 113s) — la trayectoria decimada no es un desfase de
+fase de la misma vuelta, es una vuelta cualitativamente distinta
+(doble de duración).
+
+**Lectura para este spec:** con los datos disponibles, 500 Hz (la
+única tasa decimada "alta" que la arquitectura permite probar) no
+muestra evidencia de converger en dos vueltas — al contrario, empeora.
+Esto no se investiga más a fondo acá (está fuera del alcance de un
+spec de transporte, ver §8), pero redefine qué tiene que validar la
+Fase D: no "¿Ethernet es mejor que USB CDC?" en abstracto, sino
+"¿Ethernet sostiene un round-trip compatible con 1 kHz?" — porque, a
+la luz de esta evidencia, 1 kHz sin decimar deja de ser una curiosidad
+y pasa a ser el candidato principal.
 
 ---
 
@@ -402,6 +476,15 @@ contenido nuevo es el equivalente del Nivel 2/3 para Ethernet.
   latencia de Fase 5 (USB CDC: min 0.728 ms / avg 0.953 ms / max 1.874
   ms) — es contenido de tesis directo ("¿Ethernet es más rápido/más
   determinístico que USB CDC para este caso de uso?").
+- **Gate adicional, motivado por §1.4:** repetir la misma
+  caracterización de round-trip a la tasa de **1 kHz** (sin decimar),
+  no solo a 100 Hz. El presupuesto por ciclo a 1 kHz es 1 ms — por
+  debajo del máximo ya medido en USB CDC (1.874 ms). Si Ethernet no
+  sostiene round-trip + cómputo del autopiloto (~100-500 μs, Fase 4)
+  dentro de ese presupuesto con margen, 1 kHz sin decimar **no es
+  viable como HIL real**, aunque la evidencia de SIL (§1.4) sugiera
+  que es la única cadencia decimada... en realidad no-decimada que no
+  mostró divergencia. Este resultado condiciona la Fase F.
 
 ### Fase E — Soak test completo sobre Ethernet, a 100 Hz (referencia justa)
 
@@ -417,17 +500,47 @@ contenido nuevo es el equivalente del Nivel 2/3 para Ethernet.
   nuevo que investigar, separado del hallazgo de ancho de banda ya
   conocido. Si diverge MENOS o deja de reproducir el problema, también
   amerita entender por qué antes de confiar en el resultado.
+- Esta fase sigue siendo la que cierra el alcance **de este spec**
+  (transporte, nada más). Sirve como línea de base para la Fase F, que
+  ya no es parte de este documento sino su continuación lógica
+  inmediata — ver §8.
+
+### Fase F (fuera de este spec, continuación directa) — Soak test a 1 kHz sin decimar, condicionado a la Fase D
+
+- Solo si la Fase D confirma que Ethernet sostiene el presupuesto de 1
+  ms: repetir el soak test de 18 ciclos con el autopiloto corriendo en
+  **cada paso físico** (sin decimación), sobre Ethernet.
+- **Gate:** dispersión del mismo orden que el soak test SIL original
+  sin decimar (que por construcción debería ser ~0, al no haber
+  decimación que introduzca error). Si este gate tampoco cierra, la
+  causa ya no puede ser ancho de banda de decimación — habría que
+  revisar precisión numérica del port C, timing real de
+  `falcon6_autopilot_step()` en hardware, o algo no identificado
+  todavía.
+- Se deja fuera de este spec (es una fase nueva del plan maestro, no
+  un cambio de transporte) pero se documenta acá porque la evidencia
+  de §1.4 la vuelve la pregunta inmediata siguiente, no una mejora
+  optativa a futuro.
 
 ---
 
 ## 8. Fuera de alcance de este spec
 
-- **Subir la cadencia por encima de 100 Hz.** Es el paso lógico
-  siguiente una vez caracterizado el link Ethernet (Fase D de §7 da
-  los números de latencia/jitter necesarios para decidir cuánto
-  margen hay), pero es una decisión de diseño separada — amerita su
-  propio spec, posiblemente revisando si hace falta volver a correr
-  el Gate Nivel 1 a una cadencia nueva.
+- **Subir la cadencia por encima de 100 Hz.** Sigue siendo una
+  decisión de diseño separada de este documento (que solo cambia
+  transporte) — pero, a la luz de §1.4, deja de ser un "paso lógico
+  siguiente" discrecional: la evidencia en SIL puro no muestra
+  ninguna tasa decimada (100/200/500 Hz) convergiendo, y la única
+  tasa sin divergencia observada es 1 kHz sin decimar (caso trivial).
+  Esto no se resuelve en este spec porque excede su alcance (cambiar
+  *transporte*, no *cadencia ni arquitectura de control*), pero la
+  Fase D (§7) ya incorpora el gate de latencia a 1 kHz necesario para
+  saber si Ethernet puede sostenerlo, y la Fase F (§7, fuera de este
+  documento) es la continuación directa si ese gate cierra. Si Ethernet
+  **no** sostiene 1 kHz, la pregunta de fondo (¿`control_rates` puede
+  seguir dependiendo de un round-trip host↔STM32 en cada ciclo, o
+  necesita correr desacoplado del host?) queda abierta para un spec
+  propio — no se improvisa esa respuesta acá.
 - **Esquema multi-rate** (outer loops / rate loops a tasas distintas).
   Mitigación alternativa descartada en §1.2, no se retoma acá.
 - Cualquier cambio a `src/autopilot/*` o al contenido del ICD.
@@ -486,6 +599,7 @@ preferencia, no una decisión cerrada — confirmar antes de la Fase C.
 | RMII/PHY requiere ajuste fino de timing/pines no documentado para esta placa específica (como pasó con SWD en Fase 1 y con HSE/HSI en Fase 4) | Media | Medio | Presupuestar tiempo de debug de bajo nivel en Fase B, igual que se hizo con los hallazgos previos — es parte del patrón ya establecido en este proyecto |
 | Latencia/jitter de Ethernet resulta peor de lo esperado (poco probable, pero no verificado) | Baja | Medio | Fase D lo caracteriza explícitamente contra la tabla de Fase 5 (USB CDC) antes de dar por buena la migración |
 | El Gate de Fase E no reproduce el resultado de referencia (ni para bien ni para mal) sin causa clara | Media | Alto | Es, en sí mismo, el disparador para investigar antes de avanzar — no se declara éxito hasta entender la causa de cualquier discrepancia, consistente con el criterio ya aplicado al hallazgo de ancho de banda original |
+| **Ethernet no sostiene el presupuesto de ~1 ms necesario para 1 kHz sin decimar (§1.4), y ninguna tasa decimada probada en SIL converge tampoco** — confirmado, no hipotético, para 100/200/500 Hz en las ventanas evaluadas | **Confirmada (parcial: falta medir latencia real de Ethernet)** | **Alto** | Fase D (§7) caracteriza el round-trip real a 1 kHz antes de invertir en Fase E/F. Si no cierra, el problema deja de ser de transporte — amerita un spec propio sobre si `control_rates` puede seguir dependiendo de un ida-y-vuelta por ciclo, o necesita ejecutarse desacoplado del host (candidato: lazo rápido nativo en el STM32, outer loops decimados vía host) |
 
 ---
 
@@ -498,5 +612,9 @@ preferencia, no una decisión cerrada — confirmar antes de la Fase C.
   insuficiente — origen de este spec).
 - `spec-auditoria-control-roll-stm32.md` — referencia de estilo/rigor
   para auditorías de este proyecto.
-- `audit_decimation_bandwidth.py` — herramienta de auditoría portable
-  usada para el diagnóstico de causa raíz citado en §1.1.
+- `audit_decimation_bandwidth.py` + `TEST_audit_decimation_bandwidth.md`
+  — herramienta de auditoría portable usada para el diagnóstico de
+  causa raíz citado en §1.1 y para el barrido de tasas de §1.4.
+  Validada en modo local (nominal, parámetros inválidos, ratio no
+  entero) el 2026-10-10 antes de usarse para generar la evidencia de
+  §1.4.
